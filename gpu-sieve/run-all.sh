@@ -9,7 +9,7 @@ else
     CC=gcc
 fi
 
-CFLAGS="-O3 -fopenmp"
+CFLAGS="-O3 -fopenmp -lm"
 N=${1:-100000000}
 
 echo "Compilador: $CC"
