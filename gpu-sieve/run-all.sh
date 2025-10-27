@@ -9,7 +9,7 @@ else
     CC=gcc
 fi
 
-CFLAGS="-O3 -fopenmp -lm"
+CFLAGS="-O3 -fopenmp"
 N=${1:-100000000}
 
 echo "Compilador: $CC"
@@ -17,12 +17,12 @@ echo "N = $N"
 
 # Compila versão CPU (seq/cpu)
 echo "-> Compilando crivo (CPU)..."
-$CC $CFLAGS crivo.c -o crivo
+$CC $CFLAGS crivo.c -o crivo -lm
 
 # Compila versão com tentativa de offload GPU (se suportado)
 echo "-> Tentando compilar crivo com offload GPU..."
 GPU_OK=1
-if $CC $CFLAGS -foffload=nvptx-none crivo.c -o crivo_gpu 2> build_gpu.err; then
+if $CC $CFLAGS -foffload=nvptx-none crivo.c -o crivo_gpu -lm 2> build_gpu.err; then
   echo "   Compilação GPU OK."
 else
   echo "   Falhou a compilação com offload (veja build_gpu.err). Usarei o binário CPU para 'gpu' como fallback."
