@@ -1,15 +1,21 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-# Configuração
-CC=${CC:-gcc-8}
+# Detecta compilador disponível
+if command -v gcc-8 &> /dev/null; then
+    CC=gcc-8
+else
+    echo "⚠️  gcc-8 não encontrado, usando gcc padrão ($(gcc --version | head -n1))"
+    CC=gcc
+fi
+
 CFLAGS="-O3 -fopenmp"
 N=${1:-100000000}
 
 echo "Compilador: $CC"
 echo "N = $N"
 
-# Compila versão CPU (seq/cpu) — um binário
+# Compila versão CPU (seq/cpu)
 echo "-> Compilando crivo (CPU)..."
 $CC $CFLAGS crivo.c -o crivo
 
@@ -28,7 +34,6 @@ measure() {
   local exe="$1"; shift
   local label="$1"; shift
   local nval="$1"; shift
-  # Usa /usr/bin/time para pegar o tempo em segundos (apenas real)
   local t
   t=$(/usr/bin/time -f "%e" ./$exe $label "$nval" >/tmp/out.$$ 2>&1) || true
   local primes
