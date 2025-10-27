@@ -100,8 +100,7 @@ int sieve_omp_gpu(long long n) {
             if (prime[p]) {
                 long long start = p * p;
                 // Marca múltiplos em paralelo no device
-                #pragma omp target teams distribute parallel for \
-                    map(present: prime[0:n+1]) firstprivate(p, n, start)
+                #pragma omp target teams distribute parallel for firstprivate(p, n, start)
                 for (long long i = start; i <= n; i += p) {
                     prime[i] = 0;
                 }
