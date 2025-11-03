@@ -1,9 +1,12 @@
 #!/usr/bin/env sh
 set -e
 
-# Compilação com nvcc padrão (host gcc 5), -O3 e suporte a OpenMP
-echo "Compilando com nvcc (host gcc-5), O3 e OpenMP..."
-nvcc mm.cu -O3 -Xcompiler -fopenmp -o mm
+# GTX 1030 (Pascal GP108) = SM 6.1
+ARCH=${ARCH:-sm_61}
+
+echo "Compilando com nvcc (host gcc-5), -O3, OpenMP e C++11 para ${ARCH}..."
+nvcc mm.cu -O3 -std=c++11 -Xcompiler "-fopenmp -std=gnu++11" \
+  -gencode arch=compute_61,code=sm_61 -o mm
 
 WIDTH=${1:-2000}
 THREADS=${OMP_NUM_THREADS:-0}
