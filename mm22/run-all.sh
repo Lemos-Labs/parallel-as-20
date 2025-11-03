@@ -18,18 +18,18 @@ echo
 
 build_seq() {
   echo "[build] mm_seq"
-  $CC -O3 -fopenmp -DVARIANT=seq mm.c -o mm_seq
+  "$CC" -O3 -fopenmp -DVARIANT=0 mm.c -o mm_seq
 }
 
 build_cpu() {
   echo "[build] mm_cpu (OpenMP multicore)"
-  $CC -O3 -fopenmp -DVARIANT=cpu mm.c -o mm_cpu
+  "$CC" -O3 -fopenmp -DVARIANT=1 mm.c -o mm_cpu
 }
 
 build_gpu() {
-  name="$1" def="$2"
+  name="$1" variant="$2"
   echo "[build] $name (OpenMP target offload)"
-  $CC -O3 -fopenmp -foffload=nvptx-none -misa="$SM" -DVARIANT="$def" mm.c -o "$name"
+  "$CC" -O3 -fopenmp -foffload=nvptx-none -misa="$SM" -DVARIANT="$variant" mm.c -o "$name"
 }
 
 run_bin() {
@@ -44,12 +44,8 @@ nvprof_maybe() {
   if command -v nvprof >/dev/null 2>&1; then
     echo
     echo ">> nvprof metrics for $bin"
-    # metrics: warps_launched (event) and warp_execution_efficiency (metric)
     nvprof --events warps_launched --metrics warp_execution_efficiency "./$bin" "$WIDTH" 2>&1 | \
-      awk '
-        /warps_launched/ {print}
-        /warp_execution_efficiency/ {print}
-      '
+      awk '/warps_launched/ || /warp_execution_efficiency/'
   else
     echo "[warn] nvprof não encontrado — pulando métricas."
   fi
@@ -58,9 +54,9 @@ nvprof_maybe() {
 # 1) Build
 build_seq
 build_cpu
-build_gpu mm_gpu_dist  gpu_dist
-build_gpu mm_gpu_par   gpu_par
-build_gpu mm_gpu_simd  gpu_simd
+build_gpu mm_gpu_dist  2
+build_gpu mm_gpu_par   3
+build_gpu mm_gpu_simd  4
 
 # 2) Run
 run_bin mm_seq
@@ -73,5 +69,4 @@ run_bin mm_gpu_simd
 nvprof_maybe mm_gpu_simd
 
 echo
-echo "==> Concluído."
-echo "Anote os tempos e métricas para colocar no cabeçalho do seu relatório/submissão."
+echo "==> Concluído. Anote os tempos e as métricas (warps_launched, warp_execution_efficiency)."

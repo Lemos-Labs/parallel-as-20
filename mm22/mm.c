@@ -1,32 +1,18 @@
 /*
   mm.c — Matrix-Matrix multiply (C = A * B) com variantes:
-    VARIANT=seq        -> sequencial (CPU)
-    VARIANT=cpu        -> OpenMP multicore (CPU)
-    VARIANT=gpu_dist   -> OpenMP target teams distribute
-    VARIANT=gpu_par    -> OpenMP target teams distribute parallel for
-    VARIANT=gpu_simd   -> OpenMP target teams distribute parallel for simd
 
-  Como compilar (exemplos; o script run_all.sh faz isso pra você):
-    gcc -O3 -fopenmp -DVARIANT=seq mm.c -o mm_seq
-    gcc -O3 -fopenmp -DVARIANT=cpu mm.c -o mm_cpu
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=gpu_dist mm.c -o mm_gpu_dist
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=gpu_par  mm.c -o mm_gpu_par
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=gpu_simd mm.c -o mm_gpu_simd
+    VARIANT=0  -> sequencial (CPU)
+    VARIANT=1  -> OpenMP multicore (CPU)
+    VARIANT=2  -> OpenMP target teams distribute            (GPU)
+    VARIANT=3  -> OpenMP target teams distribute parallel for (GPU)
+    VARIANT=4  -> OpenMP target teams distribute parallel for simd (GPU)
 
-  Execução:
-    ./mm_seq [WIDTH]
-    ./mm_cpu [WIDTH]
-    ./mm_gpu_dist [WIDTH]
-    ./mm_gpu_par [WIDTH]
-    ./mm_gpu_simd [WIDTH]
-
-  Coleta de métricas (GPU):
-    nvprof --events warps_launched --metrics warp_execution_efficiency ./mm_gpu_dist
-    (idem para as outras variantes GPU)
-
-  Observação do enunciado:
-    Se a sua submissão final exigir PRAGMAS comentados, basta submeter este mesmo arquivo
-    SEM o script, pois as diretivas estão “fixadas” por VARIANT em tempo de compilação.
+  Exemplos (o run_all.sh já faz isso):
+    gcc -O3 -fopenmp -DVARIANT=0 mm.c -o mm_seq
+    gcc -O3 -fopenmp -DVARIANT=1 mm.c -o mm_cpu
+    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=2 mm.c -o mm_gpu_dist
+    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=3 mm.c -o mm_gpu_par
+    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=4 mm.c -o mm_gpu_simd
 */
 
 #ifndef _POSIX_C_SOURCE
@@ -36,7 +22,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <omp.h>
-#include <string.h>
+
+#ifndef VARIANT
+#define VARIANT 0   /* default: sequencial */
+#endif
 
 #ifndef WIDTH_DEFAULT
 #define WIDTH_DEFAULT 2000
@@ -60,31 +49,32 @@ static double checksum(const double *c, int n) {
   return s;
 }
 
+/* SEQ */
 static void mm_seq_impl(const double *a, const double *b, double *c, int n) {
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < n; j++) {
       double sum = 0.0;
-      for (int k = 0; k < n; k++) {
+      for (int k = 0; k < n; k++)
         sum += a[(size_t)i*n + k] * b[(size_t)k*n + j];
-      }
       c[(size_t)i*n + j] = sum;
     }
   }
 }
 
+/* OpenMP CPU */
 static void mm_cpu_omp_impl(const double *a, const double *b, double *c, int n) {
   #pragma omp parallel for collapse(2) schedule(static)
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < n; j++) {
       double sum = 0.0;
-      for (int k = 0; k < n; k++) {
+      for (int k = 0; k < n; k++)
         sum += a[(size_t)i*n + k] * b[(size_t)k*n + j];
-      }
       c[(size_t)i*n + j] = sum;
     }
   }
 }
 
+/* GPU: target teams distribute */
 static void mm_gpu_distribute_impl(const double *a, const double *b, double *c, int n) {
   size_t sz = (size_t)n * (size_t)n;
   #pragma omp target data map(to: a[0:sz], b[0:sz]) map(from: c[0:sz])
@@ -93,15 +83,15 @@ static void mm_gpu_distribute_impl(const double *a, const double *b, double *c, 
     for (int i = 0; i < n; i++) {
       for (int j = 0; j < n; j++) {
         double sum = 0.0;
-        for (int k = 0; k < n; k++) {
+        for (int k = 0; k < n; k++)
           sum += a[(size_t)i*n + k] * b[(size_t)k*n + j];
-        }
         c[(size_t)i*n + j] = sum;
       }
     }
   }
 }
 
+/* GPU: target teams distribute parallel for */
 static void mm_gpu_distribute_parallel_for_impl(const double *a, const double *b, double *c, int n) {
   size_t sz = (size_t)n * (size_t)n;
   #pragma omp target data map(to: a[0:sz], b[0:sz]) map(from: c[0:sz])
@@ -110,15 +100,15 @@ static void mm_gpu_distribute_parallel_for_impl(const double *a, const double *b
     for (int i = 0; i < n; i++) {
       for (int j = 0; j < n; j++) {
         double sum = 0.0;
-        for (int k = 0; k < n; k++) {
+        for (int k = 0; k < n; k++)
           sum += a[(size_t)i*n + k] * b[(size_t)k*n + j];
-        }
         c[(size_t)i*n + j] = sum;
       }
     }
   }
 }
 
+/* GPU: target teams distribute parallel for simd */
 static void mm_gpu_distribute_parallel_for_simd_impl(const double *a, const double *b, double *c, int n) {
   size_t sz = (size_t)n * (size_t)n;
   #pragma omp target data map(to: a[0:sz], b[0:sz]) map(from: c[0:sz])
@@ -127,9 +117,8 @@ static void mm_gpu_distribute_parallel_for_simd_impl(const double *a, const doub
     for (int i = 0; i < n; i++) {
       for (int j = 0; j < n; j++) {
         double sum = 0.0;
-        for (int k = 0; k < n; k++) {
+        for (int k = 0; k < n; k++)
           sum += a[(size_t)i*n + k] * b[(size_t)k*n + j];
-        }
         c[(size_t)i*n + j] = sum;
       }
     }
@@ -140,7 +129,6 @@ static double run_and_time(void (*fn)(const double*, const double*, double*, int
                            const char *label,
                            const double *a, const double *b, double *c, int n)
 {
-  // zera C
   #pragma omp parallel for schedule(static)
   for (size_t i = 0; i < (size_t)n*n; i++) c[i] = 0.0;
 
@@ -149,7 +137,7 @@ static double run_and_time(void (*fn)(const double*, const double*, double*, int
   double t1 = omp_get_wtime();
   double sec = t1 - t0;
   double s = checksum(c, n);
-  printf("%-35s | time = %.6f s | checksum = %.4f\n", label, sec, s);
+  printf("%-38s | time = %.6f s | checksum = %.4f\n", label, sec, s);
   return sec;
 }
 
@@ -173,48 +161,20 @@ int main(int argc, char **argv) {
 
   init(a,b,c,n);
 
-  printf("n=%d  (%.2f MB por matriz)  VARIANT=%s\n",
-         n, bytes/1048576.0,
-#ifdef VARIANT
-#  define STR_(x) #x
-#  define STR(x) STR_(x)
-         STR(VARIANT)
-#else
-         "seq(default)"
-#endif
-  );
+  printf("n=%d  (%.2f MB por matriz)  VARIANT=%d\n", n, bytes/1048576.0, VARIANT);
 
-#ifndef VARIANT
-#  define VARIANT seq
-#endif
-
-#if defined(VARIANT) && ( \
-     (0 * (VARIANT==zzz)) || 1 )
-  // No-op: only to avoid warnings in some compilers about empty translation
-#endif
-
-#if defined(VARIANT) && !defined(__NVPTX__)
-  // nothing here; just a placeholder for preprocessors that expand macros oddly
-#endif
-
-#if   defined(VARIANT) && (0)
-  // unreachable
-#elif defined(VARIANT) && !defined(__NVPTX__)
-  // host build conditions are fine; selection happens below
-#endif
-
-#if   defined(VARIANT) && (strcmp(STR(VARIANT), "seq") == 0)
+#if   VARIANT == 0
   run_and_time(mm_seq_impl, "SEQ (CPU 1T)", a,b,c,n);
-#elif defined(VARIANT) && (strcmp(STR(VARIANT), "cpu") == 0)
+#elif VARIANT == 1
   run_and_time(mm_cpu_omp_impl, "OpenMP CPU", a,b,c,n);
-#elif defined(VARIANT) && (strcmp(STR(VARIANT), "gpu_dist") == 0)
+#elif VARIANT == 2
   run_and_time(mm_gpu_distribute_impl, "GPU distribute", a,b,c,n);
-#elif defined(VARIANT) && (strcmp(STR(VARIANT), "gpu_par") == 0)
+#elif VARIANT == 3
   run_and_time(mm_gpu_distribute_parallel_for_impl, "GPU dist+parallel for", a,b,c,n);
-#elif defined(VARIANT) && (strcmp(STR(VARIANT), "gpu_simd") == 0)
+#elif VARIANT == 4
   run_and_time(mm_gpu_distribute_parallel_for_simd_impl, "GPU dist+parallel for simd", a,b,c,n);
 #else
-  run_and_time(mm_seq_impl, "SEQ (CPU 1T) [default]", a,b,c,n);
+# error "VARIANT inválido. Use 0..4."
 #endif
 
   free(a); free(b); free(c);
