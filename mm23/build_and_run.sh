@@ -1,12 +1,9 @@
 #!/usr/bin/env sh
 set -e
 
-# Ajuste o caminho do gcc-8 caso necessário (algumas instalações exigem --ccbin=gcc-8)
-# Se não tiver gcc-8 no PATH, remova o -ccbin e deixe o host default que o nvcc aceitar.
-NVCC_CC="-ccbin gcc-8"
-
-echo "Compilando com nvcc (host gcc-8), O3 e OpenMP..."
-nvcc mm.cu -O3 -Xcompiler -fopenmp $NVCC_CC -o mm
+# Compilação com nvcc padrão (host gcc 5), -O3 e suporte a OpenMP
+echo "Compilando com nvcc (host gcc-5), O3 e OpenMP..."
+nvcc mm.cu -O3 -Xcompiler -fopenmp -o mm
 
 WIDTH=${1:-2000}
 THREADS=${OMP_NUM_THREADS:-0}
