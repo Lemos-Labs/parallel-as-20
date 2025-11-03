@@ -1,84 +1,77 @@
-#!/bin/bash
-# =====================================================================
-# Script: run_all_gcc.sh
-# Requisitos: gcc com suporte a OpenMP offload NVPTX (libgomp-plugin-nvptx)
-#             NVIDIA driver + CUDA toolkit (para nvprof)
-# Uso: chmod +x run_all_gcc.sh && ./run_all_gcc.sh
-# Dica: export SM=sm_80  (ou sm_70, sm_75, sm_86...) antes de rodar
-# =====================================================================
+#!/bin/sh
+# run_all.sh — compila e executa as variantes (seq, cpu, gpu_*), e coleta métricas GPU com nvprof
+# Requisitos: gcc, nvprof, driver NVIDIA, GCC com OpenMP offload NVPTX
+# Variáveis:
+#   SM    -> arquitetura CUDA (ex.: sm_70, sm_80) [default: sm_70]
+#   WIDTH -> tamanho da matriz [default: 2000]
+#   CC    -> compilador (default: gcc)
 
-set -euo pipefail
+set -eu
 
-SRC="mm.c"
-WIDTH="${WIDTH:-2000}"
-OUT="results_gcc.txt"
-
-# Ajuste a arquitetura da GPU aqui (ou via env SM=sm_80)
+CC="${CC:-gcc}"
 SM="${SM:-sm_70}"
+WIDTH="${WIDTH:-2000}"
 
-CPU_FLAGS="-O3 -fopenmp"
-GPU_FLAGS="-O3 -fopenmp -foffload=nvptx-none -foffload-options=nvptx-none=-misa=${SM}"
+echo "==> Config:"
+echo "CC=$CC  SM=$SM  WIDTH=$WIDTH"
+echo
 
-echo "================== MATRIX MULTIPLICATION (gcc) ==================" > "$OUT"
-echo "Matrix size: ${WIDTH} x ${WIDTH}" | tee -a "$OUT"
-echo "Compiler : gcc" | tee -a "$OUT"
-echo "CPU flags: ${CPU_FLAGS}" | tee -a "$OUT"
-echo "GPU flags: ${GPU_FLAGS}" | tee -a "$OUT"
-date | tee -a "$OUT"
-echo "" | tee -a "$OUT"
-
-# ---------------------------------------------------------------------
-# 1) Compilar
-# ---------------------------------------------------------------------
-echo "[Compilando (CPU)]"
-gcc ${CPU_FLAGS} "${SRC}" -o mm_cpu
-
-echo "[Compilando (GPU offload NVPTX)]"
-gcc ${GPU_FLAGS} "${SRC}" -o mm_gpu
-
-# ---------------------------------------------------------------------
-# 2) Rodar SEQ
-# ---------------------------------------------------------------------
-echo -e "\n[Executando SEQ]" | tee -a "$OUT"
-./mm_cpu -m seq -w "${WIDTH}" | tee -a "$OUT"
-
-# ---------------------------------------------------------------------
-# 3) Rodar CPU OpenMP (necessita descomentar pragma em mm_omp_cpu para ganho real)
-# ---------------------------------------------------------------------
-echo -e "\n[Executando CPU OpenMP]" | tee -a "$OUT"
-./mm_cpu -m cpu -w "${WIDTH}" | tee -a "$OUT"
-
-# ---------------------------------------------------------------------
-# 4) Rodar GPU (3 variações) — é necessário descomentar um bloco de pragma por vez em mm_omp_gpu
-#    Para cada variação abaixo, deixe APENAS aquela variação descomentada e recompile mm_gpu.
-#    Se você já descomentou todas manualmente e criou 3 arquivos distintos, ajuste o script conforme.
-# ---------------------------------------------------------------------
-
-run_gpu_variant () {
-  local variant="$1"
-  echo -e "\n[Executando GPU OpenMP target] variant=${variant}" | tee -a "$OUT"
-  echo "--- GPU ${variant} ---" | tee -a "$OUT"
-  # Garante que falhe se não houver offload (em vez de cair na CPU)
-  OMP_TARGET_OFFLOAD=MANDATORY \
-  nvprof --events warps_launched --metrics warp_execution_efficiency \
-    ./mm_gpu -m gpu -g "${variant}" -w "${WIDTH}" 2>&1 | tee -a "$OUT"
+build_seq() {
+  echo "[build] mm_seq"
+  $CC -O3 -fopenmp -DVARIANT=seq mm.c -o mm_seq
 }
 
-# AVISO IMPORTANTE:
-#   Antes de rodar cada uma das linhas abaixo, descomente APENAS o bloco correspondente no mm.c
-#   (dentro da função mm_omp_gpu) e recompile (linha "Compilando GPU" acima).
-#   Exemplo de ciclo:
-#     1) Descomente "distribute" -> ./run_all_gcc.sh (ou rode só o bloco abaixo)
-#     2) Comente "distribute", descomente "distpar" -> recompila e roda
-#     3) Comente "distpar", descomente "distparsimd" -> recompila e roda
-#
-# Se preferir, crie 3 cópias do arquivo com cada variação descomentada e troque o binário chamado aqui.
+build_cpu() {
+  echo "[build] mm_cpu (OpenMP multicore)"
+  $CC -O3 -fopenmp -DVARIANT=cpu mm.c -o mm_cpu
+}
 
-# Descomente UMA chamada por vez quando o respectivo bloco estiver ativo no mm.c:
-# run_gpu_variant distribute
-# run_gpu_variant distpar
-# run_gpu_variant distparsimd
+build_gpu() {
+  name="$1" def="$2"
+  echo "[build] $name (OpenMP target offload)"
+  $CC -O3 -fopenmp -foffload=nvptx-none -misa="$SM" -DVARIANT="$def" mm.c -o "$name"
+}
 
-echo -e "\n================== FINALIZADO ==================" | tee -a "$OUT"
-date | tee -a "$OUT"
-echo "Resultados em: ${OUT}"
+run_bin() {
+  bin="$1"
+  echo
+  echo "---- Running: ./$bin $WIDTH ----"
+  "./$bin" "$WIDTH"
+}
+
+nvprof_maybe() {
+  bin="$1"
+  if command -v nvprof >/dev/null 2>&1; then
+    echo
+    echo ">> nvprof metrics for $bin"
+    # metrics: warps_launched (event) and warp_execution_efficiency (metric)
+    nvprof --events warps_launched --metrics warp_execution_efficiency "./$bin" "$WIDTH" 2>&1 | \
+      awk '
+        /warps_launched/ {print}
+        /warp_execution_efficiency/ {print}
+      '
+  else
+    echo "[warn] nvprof não encontrado — pulando métricas."
+  fi
+}
+
+# 1) Build
+build_seq
+build_cpu
+build_gpu mm_gpu_dist  gpu_dist
+build_gpu mm_gpu_par   gpu_par
+build_gpu mm_gpu_simd  gpu_simd
+
+# 2) Run
+run_bin mm_seq
+run_bin mm_cpu
+run_bin mm_gpu_dist
+nvprof_maybe mm_gpu_dist
+run_bin mm_gpu_par
+nvprof_maybe mm_gpu_par
+run_bin mm_gpu_simd
+nvprof_maybe mm_gpu_simd
+
+echo
+echo "==> Concluído."
+echo "Anote os tempos e métricas para colocar no cabeçalho do seu relatório/submissão."
