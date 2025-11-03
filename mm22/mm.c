@@ -1,18 +1,7 @@
 /*
-  mm.c — Matrix-Matrix multiply (C = A * B) com variantes:
-
-    VARIANT=0  -> sequencial (CPU)
-    VARIANT=1  -> OpenMP multicore (CPU)
-    VARIANT=2  -> OpenMP target teams distribute            (GPU)
-    VARIANT=3  -> OpenMP target teams distribute parallel for (GPU)
-    VARIANT=4  -> OpenMP target teams distribute parallel for simd (GPU)
-
-  Exemplos (o run_all.sh já faz isso):
-    gcc -O3 -fopenmp -DVARIANT=0 mm.c -o mm_seq
-    gcc -O3 -fopenmp -DVARIANT=1 mm.c -o mm_cpu
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=2 mm.c -o mm_gpu_dist
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=3 mm.c -o mm_gpu_par
-    gcc -O3 -fopenmp -foffload=nvptx-none -misa=sm_70 -DVARIANT=4 mm.c -o mm_gpu_simd
+ SEQ (CPU 1T)       time = 68.241525 s
+ OPENMP CPU         time = 18.566695 s
+ 
 */
 
 #ifndef _POSIX_C_SOURCE
