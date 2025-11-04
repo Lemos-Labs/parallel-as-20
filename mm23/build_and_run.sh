@@ -5,8 +5,11 @@ set -e
 ARCH=${ARCH:-sm_61}
 
 echo "Compilando com nvcc (host gcc-5), -O3, OpenMP e C++11 para ${ARCH}..."
-nvcc mm.cu -O3 -std=c++11 -Xcompiler "-fopenmp -std=gnu++11" \
-  -gencode arch=compute_61,code=sm_61 -o mm
+nvcc mm.cu -O3 -std=c++11 \
+  -D_GLIBCXX_USE_FLOAT128=0 \
+  -Xcompiler "-fopenmp -std=gnu++11 -D_GLIBCXX_USE_FLOAT128=0" \
+  -gencode arch=compute_61,code=sm_61 \
+  -o mm
 
 WIDTH=${1:-2000}
 THREADS=${OMP_NUM_THREADS:-0}
