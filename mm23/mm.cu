@@ -1,10 +1,10 @@
 /*******************************************************
 RESULTS (preencha após executar os scripts)
 
-MACHINE: <GPU/CPU info aqui>
+MACHINE / GPU: <GPU/CPU info aqui>  (ex.: GTX 1030 - SM 6.1)
 COMPILERS:
-  - gcc-8 (host)   flags: -O3 -fopenmp
-  - nvcc           flags: -O3 -Xcompiler -fopenmp -ccbin=gcc-8
+  - gcc-5 (host)   flags: -O3 -fopenmp
+  - nvcc           flags: -O3 -Xcompiler -fopenmp -gencode arch=compute_61,code=sm_61
 
 MATRIX SIZE (width): 2000  (ou o que você usou)
 
@@ -26,32 +26,28 @@ GPU PROFILING (nvprof):
 
 Como coletar (exemplo):
   nvprof --events warps_launched --metrics warp_execution_efficiency ./mm --variant cuda-tiled --width 2000
-
 *******************************************************/
+
+/* ---- Hacks p/ NVCC + GCC5: desabilita __float128 nos headers da libstdc++ ---- */
+#ifndef _GLIBCXX_USE_FLOAT128
+#define _GLIBCXX_USE_FLOAT128 0
+#endif
+#define __STRICT_ANSI__ 1
+/* ------------------------------------------------------------------------------ */
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <string>
-#include <iostream>
-#include <chrono>
-
+#include <sys/time.h>   // gettimeofday
 #ifdef _OPENMP
   #include <omp.h>
-#else
-  // Fallback simples se alguém compilar sem OpenMP
-  static inline double omp_get_wtime() {
-    using clk = std::chrono::steady_clock;
-    static auto t0 = clk::now();
-    auto t = clk::now();
-    return std::chrono::duration<double>(t - t0).count();
-  }
 #endif
 
 #include <cuda_runtime.h>
 
-// -------------------------- Utils --------------------------
+/* -------------------------- Utils -------------------------- */
+
 #define CUDA_CHECK(call) do { \
   cudaError_t err__ = (call); \
   if (err__ != cudaSuccess) { \
@@ -60,23 +56,37 @@ Como coletar (exemplo):
   } \
 } while(0)
 
+static inline double walltime_s() {
+#ifdef _OPENMP
+  return omp_get_wtime();
+#else
+  struct timeval tv;
+  gettimeofday(&tv, 0);
+  return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+#endif
+}
+
 static void init_mats(double* a, double* b, double* c, int width) {
-  // mesmo padrão do código original: a[i,j] = i; b[i,j] = j; c = 0
-  #pragma omp parallel for schedule(static)
-  for (int i = 0; i < width; ++i) {
-    for (int j = 0; j < width; ++j) {
-      a[i*width + j] = static_cast<double>(i);
-      b[i*width + j] = static_cast<double>(j);
+  /* mesmo padrão do código original: a[i,j]=i; b[i,j]=j; c=0 */
+  int i, j;
+#ifdef _OPENMP
+  #pragma omp parallel for private(j) schedule(static)
+#endif
+  for (i = 0; i < width; ++i) {
+    for (j = 0; j < width; ++j) {
+      a[i*width + j] = (double)i;
+      b[i*width + j] = (double)j;
       c[i*width + j] = 0.0;
     }
   }
 }
 
 static void mm_seq(const double* a, const double* b, double* c, int width) {
-  for (int i = 0; i < width; ++i) {
-    for (int j = 0; j < width; ++j) {
+  int i, j, k;
+  for (i = 0; i < width; ++i) {
+    for (j = 0; j < width; ++j) {
       double sum = 0.0;
-      for (int k = 0; k < width; ++k) {
+      for (k = 0; k < width; ++k) {
         sum += a[i*width + k] * b[k*width + j];
       }
       c[i*width + j] = sum;
@@ -85,12 +95,14 @@ static void mm_seq(const double* a, const double* b, double* c, int width) {
 }
 
 static void mm_omp(const double* a, const double* b, double* c, int width) {
-  // Granularidade por elemento de saída (i,j)
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int i = 0; i < width; ++i) {
-    for (int j = 0; j < width; ++j) {
+  int i, j, k;
+#ifdef _OPENMP
+  #pragma omp parallel for private(j,k) schedule(static) collapse(2)
+#endif
+  for (i = 0; i < width; ++i) {
+    for (j = 0; j < width; ++j) {
       double sum = 0.0;
-      for (int k = 0; k < width; ++k) {
+      for (k = 0; k < width; ++k) {
         sum += a[i*width + k] * b[k*width + j];
       }
       c[i*width + j] = sum;
@@ -98,9 +110,9 @@ static void mm_omp(const double* a, const double* b, double* c, int width) {
   }
 }
 
-// -------------------------- CUDA kernels --------------------------
+/* -------------------------- CUDA kernels -------------------------- */
 
-// Versão ingênua: um thread por elemento (i,j), loop em k dentro do kernel
+/* Versão ingênua: um thread por elemento (i,j), loop em k dentro do kernel */
 __global__ void mm_kernel_naive(const double* __restrict__ A,
                                 const double* __restrict__ B,
                                 double* __restrict__ C,
@@ -118,7 +130,7 @@ __global__ void mm_kernel_naive(const double* __restrict__ A,
   C[row * width + col] = sum;
 }
 
-// Versão otimizada com tiling e shared memory
+/* Versão otimizada com tiling e shared memory */
 template<int TILE>
 __global__ void mm_kernel_tiled(const double* __restrict__ A,
                                 const double* __restrict__ B,
@@ -132,21 +144,18 @@ __global__ void mm_kernel_tiled(const double* __restrict__ A,
   int col = blockIdx.x * TILE + threadIdx.x;
 
   double sum = 0.0;
-
-  // Número de "tiles" ao longo de k
   int tiles = (width + TILE - 1) / TILE;
 
   for (int t = 0; t < tiles; ++t) {
     int tiledCol = t * TILE + threadIdx.x; // coluna para A
     int tiledRow = t * TILE + threadIdx.y; // linha para B
 
-    // Carregar tile de A e B em shared (com checagem de borda)
     As[threadIdx.y][threadIdx.x] = (row < width && tiledCol < width) ? A[row * width + tiledCol] : 0.0;
     Bs[threadIdx.y][threadIdx.x] = (tiledRow < width && col < width) ? B[tiledRow * width + col] : 0.0;
 
     __syncthreads();
 
-    #pragma unroll
+#pragma unroll
     for (int k = 0; k < TILE; ++k) {
       sum += As[threadIdx.y][k] * Bs[k][threadIdx.x];
     }
@@ -158,15 +167,16 @@ __global__ void mm_kernel_tiled(const double* __restrict__ A,
   }
 }
 
-// -------------------------- CUDA runners --------------------------
-struct GpuTimings {
-  float total_ms = 0.0f;   // H2D + kernel + D2H
-  float kernel_ms = 0.0f;  // somente kernel
-};
+/* -------------------------- CUDA runners -------------------------- */
+
+typedef struct {
+  float total_ms;   /* H2D + kernel + D2H */
+  float kernel_ms;  /* somente kernel     */
+} GpuTimings;
 
 static GpuTimings run_cuda_naive(const double* hA, const double* hB, double* hC, int width) {
   const size_t bytes = (size_t)width * (size_t)width * sizeof(double);
-  double *dA = nullptr, *dB = nullptr, *dC = nullptr;
+  double *dA = 0, *dB = 0, *dC = 0;
 
   cudaEvent_t t0, t1, k0, k1;
   CUDA_CHECK(cudaEventCreate(&t0));
@@ -174,7 +184,7 @@ static GpuTimings run_cuda_naive(const double* hA, const double* hB, double* hC,
   CUDA_CHECK(cudaEventCreate(&k0));
   CUDA_CHECK(cudaEventCreate(&k1));
 
-  GpuTimings out;
+  GpuTimings out; out.total_ms = 0.0f; out.kernel_ms = 0.0f;
 
   CUDA_CHECK(cudaEventRecord(t0));
   CUDA_CHECK(cudaMalloc(&dA, bytes));
@@ -214,7 +224,7 @@ static GpuTimings run_cuda_naive(const double* hA, const double* hB, double* hC,
 template<int TILE>
 static GpuTimings run_cuda_tiled(const double* hA, const double* hB, double* hC, int width) {
   const size_t bytes = (size_t)width * (size_t)width * sizeof(double);
-  double *dA = nullptr, *dB = nullptr, *dC = nullptr;
+  double *dA = 0, *dB = 0, *dC = 0;
 
   cudaEvent_t t0, t1, k0, k1;
   CUDA_CHECK(cudaEventCreate(&t0));
@@ -222,7 +232,7 @@ static GpuTimings run_cuda_tiled(const double* hA, const double* hB, double* hC,
   CUDA_CHECK(cudaEventCreate(&k0));
   CUDA_CHECK(cudaEventCreate(&k1));
 
-  GpuTimings out;
+  GpuTimings out; out.total_ms = 0.0f; out.kernel_ms = 0.0f;
 
   CUDA_CHECK(cudaEventRecord(t0));
   CUDA_CHECK(cudaMalloc(&dA, bytes));
@@ -259,31 +269,31 @@ static GpuTimings run_cuda_tiled(const double* hA, const double* hB, double* hC,
   return out;
 }
 
-// -------------------------- Driver / CLI --------------------------
+/* -------------------------- Driver / CLI -------------------------- */
+
 static void usage(const char* prog) {
-  std::cerr << "Usage: " << prog
-            << " [--width N] [--variant seq|omp|cuda-naive|cuda-tiled] [--threads T]\n";
+  printf("Usage: %s [--width N] [--variant seq|omp|cuda-naive|cuda-tiled] [--threads T]\n", prog);
 }
 
 int main(int argc, char** argv) {
   int width = 2000;
-  std::string variant = "seq";
-  int threads = 0; // 0 = usar padrão do OMP
+  const char* variant = "seq";
+  int threads = 0; /* 0 = usar padrão do OMP */
 
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--width") && i+1 < argc) {
-      width = std::atoi(argv[++i]);
+      width = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "--variant") && i+1 < argc) {
       variant = argv[++i];
     } else if (!strcmp(argv[i], "--threads") && i+1 < argc) {
-      threads = std::atoi(argv[++i]);
+      threads = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "--help")) {
       usage(argv[0]);
       return 0;
     }
   }
 
-  std::cout << "width=" << width << " variant=" << variant << "\n";
+  printf("width=%d variant=%s\n", width, variant);
 
   size_t bytes = (size_t)width * (size_t)width * sizeof(double);
   double* A = (double*) std::malloc(bytes);
@@ -291,7 +301,7 @@ int main(int argc, char** argv) {
   double* C = (double*) std::malloc(bytes);
 
   if (!A || !B || !C) {
-    std::cerr << "malloc failed\n";
+    fprintf(stderr, "malloc failed\n");
     return EXIT_FAILURE;
   }
 
@@ -301,38 +311,35 @@ int main(int argc, char** argv) {
   if (threads > 0) omp_set_num_threads(threads);
 #endif
 
-  if (variant == "seq") {
-    double t0 = omp_get_wtime();
+  if (!strcmp(variant, "seq")) {
+    double t0 = walltime_s();
     mm_seq(A, B, C, width);
-    double t1 = omp_get_wtime();
-    std::cout << "[seq] time(s): " << (t1 - t0) << "\n";
+    double t1 = walltime_s();
+    printf("[seq] time(s): %.6f\n", (t1 - t0));
   }
-  else if (variant == "omp") {
-    double t0 = omp_get_wtime();
+  else if (!strcmp(variant, "omp")) {
+    double t0 = walltime_s();
     mm_omp(A, B, C, width);
-    double t1 = omp_get_wtime();
-    #ifdef _OPENMP
-      int nt = 0;
-      #pragma omp parallel
-      {
-        #pragma omp master
-        nt = omp_get_num_threads();
-      }
-      std::cout << "[omp] threads=" << nt << " time(s): " << (t1 - t0) << "\n";
-    #else
-      std::cout << "[omp] (compiled w/o OpenMP) time(s): " << (t1 - t0) << "\n";
-    #endif
+    double t1 = walltime_s();
+#ifdef _OPENMP
+    int nt = 1;
+    #pragma omp parallel
+    {
+      #pragma omp master
+      nt = omp_get_num_threads();
+    }
+    printf("[omp] threads=%d time(s): %.6f\n", nt, (t1 - t0));
+#else
+    printf("[omp] (compiled w/o OpenMP) time(s): %.6f\n", (t1 - t0));
+#endif
   }
-  else if (variant == "cuda-naive") {
+  else if (!strcmp(variant, "cuda-naive")) {
     GpuTimings gt = run_cuda_naive(A, B, C, width);
-    std::cout << "[cuda-naive] total_ms (H2D+kernel+D2H): " << gt.total_ms
-              << "  kernel_only_ms: " << gt.kernel_ms << "\n";
+    printf("[cuda-naive] total_ms(H2D+kernel+D2H)=%.3f  kernel_only_ms=%.3f\n", gt.total_ms, gt.kernel_ms);
   }
-  else if (variant == "cuda-tiled") {
-    // TILE = 32 é um bom ponto de partida
-    GpuTimings gt = run_cuda_tiled<32>(A, B, C, width);
-    std::cout << "[cuda-tiled] total_ms (H2D+kernel+D2H): " << gt.total_ms
-              << "  kernel_only_ms: " << gt.kernel_ms << "\n";
+  else if (!strcmp(variant, "cuda-tiled")) {
+    GpuTimings gt = run_cuda_tiled<32>(A, B, C, width); /* TILE=32 */
+    printf("[cuda-tiled] total_ms(H2D+kernel+D2H)=%.3f  kernel_only_ms=%.3f\n", gt.total_ms, gt.kernel_ms);
   }
   else {
     usage(argv[0]);

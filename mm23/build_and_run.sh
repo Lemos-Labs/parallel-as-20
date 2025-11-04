@@ -4,10 +4,10 @@ set -e
 # GTX 1030 (Pascal GP108) = SM 6.1
 ARCH=${ARCH:-sm_61}
 
-echo "Compilando com nvcc (host gcc-5), -O3, OpenMP e C++11 para ${ARCH}..."
-nvcc mm.cu -O3 -std=c++11 \
-  -D_GLIBCXX_USE_FLOAT128=0 \
-  -Xcompiler "-fopenmp -std=gnu++11 -D_GLIBCXX_USE_FLOAT128=0" \
+echo "Compilando com nvcc (host gcc-5), -O3, OpenMP para ${ARCH}..."
+nvcc mm.cu -O3 \
+  -D_GLIBCXX_USE_FLOAT128=0 -D__STRICT_ANSI__ \
+  -Xcompiler "-fopenmp -D_GLIBCXX_USE_FLOAT128=0 -D__STRICT_ANSI__" \
   -gencode arch=compute_61,code=sm_61 \
   -o mm
 
